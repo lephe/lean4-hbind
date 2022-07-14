@@ -1,7 +1,64 @@
 import HBind.HBind
 import HBind.ElabHdo
+open HBind(hBind)
 
 set_option trace.Elab.do true
+set_option pp.universes true
+set_option trace.Meta.synthInstance false
+
+def main: IO Unit :=
+  pure ()
+
+--== Test utilities =========================================================--
+
+def Dm1: Prop :=
+  True
+deriving Inhabited
+
+def D0: Type 0 :=
+  Nat
+deriving Inhabited
+
+def D1: Type 1 :=
+  (α: Type) → α → Nat
+deriving Inhabited
+
+def Dx: Type u :=
+  PUnit
+deriving Inhabited
+
+def getD0 [Monad m]: m D0 :=
+  pure default
+
+def getD1 [Monad m]: m D1 :=
+  pure default
+
+def getDx [Monad m]: m Dx :=
+  pure default
+
+--== Tests with `Id` ========================================================--
+
+example: Id Unit :=
+  hBind getD0 (fun _ => pure default)
+
+-- The two monads in `hBind` are morally the same, but Lean won't guess that.
+-- We need to indicate it by specifying the `m` parameter for the left action.
+example: Id Unit :=
+  hBind getD0 (m := Id) fun _ =>
+  hBind getD1 (m := Id) fun _ =>
+  hBind getDx.{5} (m := Id) fun _ =>
+  pure default
+
+-- The `hdo` notation automatically sets `(m := Id)` and `(n := Id)`, where
+-- `Id` is an identifier with level parameters.
+-- TODO: We should write `(monad := Id)` and then look at level metavars to
+-- find params, rather than naming them externally.
+universe u in
+example: Id Unit := hdo (monad := Id.{u})
+  let _ ← getD0
+  let _ ← getD1
+  let _ ← getDx.{2}
+  getDx.{0}
 
 -- Elaborating with `hdo` gives us a term based on `hBind`
 def test_IO: IO Unit := hdo
@@ -9,25 +66,3 @@ def test_IO: IO Unit := hdo
   IO.println "hBind"
   return ()
 #print test_IO
-
-def get_0: Id Nat :=
-  pure 0
-def get_1: Id ((α: Type) → α → α) :=
-  pure @id
-def get_any: Id PUnit.{u+1} :=
-  pure .unit
-
--- Heterogeneous bind succeeds
-example: Id Unit :=
-  HBind.hBind get_0 fun _ =>
-  HBind.hBind get_1 fun _ =>
-  pure ()
-
--- If we specify the monad as a polymorphic one, elaboration succeeds
--- We hacked the universe name so we have to define it
-universe u in
-example: Id Unit := hdo (monad := Id.{u})
-  let _ ← get_0
-  let _ ← get_1
-  let _ ← get_any.{2}
-  get_any.{0}

@@ -916,14 +916,15 @@ def breakToTerm : M Syntax := do
 def actionTerminalToTerm (action : Syntax) : M Syntax := withRef action <| withFreshMacroScope do
   let ctx ← read
   let u ← mkUVarTuple
+  let m := ctx.m
   match ctx.kind with
-  | Kind.regular         => if ctx.uvars.isEmpty then pure action else ``(HBind.hBind $action fun y => Pure.pure (Prod.mk y $u))
-  | Kind.forIn           => ``(HBind.hBind $action fun (_ : PUnit) => Pure.pure (ForInStep.yield $u))
-  | Kind.forInWithReturn => ``(HBind.hBind $action fun (_ : PUnit) => Pure.pure (ForInStep.yield (Prod.mk none $u)))
+  | Kind.regular         => if ctx.uvars.isEmpty then pure action else ``(HBind.hBind (m := $m) (n := $m) $action fun y => Pure.pure (Prod.mk y $u))
+  | Kind.forIn           => ``(HBind.hBind (m := $m) (n := $m) $action fun (_ : PUnit) => Pure.pure (ForInStep.yield $u))
+  | Kind.forInWithReturn => ``(HBind.hBind (m := $m) (n := $m) $action fun (_ : PUnit) => Pure.pure (ForInStep.yield (Prod.mk none $u)))
   | Kind.nestedBC        => unreachable!
-  | Kind.nestedPR        => ``(HBind.hBind $action fun y => (Pure.pure (DoResultPR.«pure» y $u)))
-  | Kind.nestedSBC       => ``(HBind.hBind $action fun y => (Pure.pure (DoResultSBC.«pureReturn» y $u)))
-  | Kind.nestedPRBC      => ``(HBind.hBind $action fun y => (Pure.pure (DoResultPRBC.«pure» y $u)))
+  | Kind.nestedPR        => ``(HBind.hBind (m := $m) (n := $m) $action fun y => (Pure.pure (DoResultPR.«pure» y $u)))
+  | Kind.nestedSBC       => ``(HBind.hBind (m := $m) (n := $m) $action fun y => (Pure.pure (DoResultSBC.«pureReturn» y $u)))
+  | Kind.nestedPRBC      => ``(HBind.hBind (m := $m) (n := $m) $action fun y => (Pure.pure (DoResultPRBC.«pure» y $u)))
 
 def seqToTerm (action : Syntax) (k : Syntax) : M Syntax := withRef action <| withFreshMacroScope do
   if action.getKind == ``Lean.Parser.Term.doDbgTrace then
@@ -933,8 +934,9 @@ def seqToTerm (action : Syntax) (k : Syntax) : M Syntax := withRef action <| wit
     let cond := action[1]
     `(assert! $cond; $k)
   else
-    let action ← withRef action ``(($action : $((←read).m) PUnit))
-    ``(HBind.hBind $action (fun (_ : PUnit) => $k))
+    let m := (←read).m
+    let action ← withRef action ``(($action : $m PUnit))
+    ``(HBind.hBind (m := $m) (n := $m) $action (fun (_ : PUnit) => $k))
 
 def declToTerm (decl : Syntax) (k : Syntax) : M Syntax := withRef decl <| withFreshMacroScope do
   let kind := decl.getKind
@@ -954,8 +956,9 @@ def declToTerm (decl : Syntax) (k : Syntax) : M Syntax := withRef decl <| withFr
       -- `doElem` must be a `doExpr action`. See `doLetArrowToCode`
       match isDoExpr? doElem with
       | some action =>
-        let action ← withRef action `(($action : $((← read).m) $type))
-        ``(HBind.hBind $action (fun ($id:ident : $type) => $k))
+        let m := (←read).m
+        let action ← withRef action `(($action : $m $type))
+        ``(HBind.hBind (m := $m) (n := $m) $action (fun ($id:ident : $type) => $k))
       | none        => Macro.throwErrorAt decl "unexpected kind of 'do' declaration"
     else
       Macro.throwErrorAt decl "unexpected kind of 'do' declaration"
@@ -1612,15 +1615,16 @@ end ToCodeBlock
 private def mkMonadAlias (m : Expr) : TermElabM Syntax := do
   let levelParams := collectLevelParams {} m |>.params
   let mType ← inferType m
-  let name ← mkFreshUserName `_hdo
+  let name ← mkFreshUserName `hdoMonadAlias
   let decl := Declaration.defnDecl {
       name := name, levelParams := levelParams.toList, type := mType,
-      value := m, hints := ReducibilityHints.opaque,
-      safety := DefinitionSafety.unsafe
+      value := m, hints := ReducibilityHints.abbrev,
+      safety := DefinitionSafety.safe
   }
   ensureNoUnassignedMVars decl
   dbg_trace m
   addAndCompile decl
+  Term.applyAttributes name #[{ name := `inline }, { name := `reducible }]
   return mkIdent name
 
 -- HDO: This elaborates like the normal do command (but with Prod/HBind)
