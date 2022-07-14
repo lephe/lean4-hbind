@@ -50,11 +50,9 @@ example: Id Unit :=
   pure default
 
 -- The `hdo` notation automatically sets `(m := Id)` and `(n := Id)`, where
--- `Id` is an identifier with level parameters.
--- TODO: We should write `(monad := Id)` and then look at level metavars to
--- find params, rather than naming them externally.
-universe u in
-example: Id Unit := hdo (monad := Id.{u})
+-- `Id` is an identifier with level parameters, inferred from the block's
+-- expected type with universes generalized.
+example: Id Unit := hdo
   let _ ← getD0
   let _ ← getD1
   let _ ← getDx.{2}

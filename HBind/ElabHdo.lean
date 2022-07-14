@@ -99,7 +99,6 @@ private def mkUnknownMonadResult : MetaM ExtractMonadResult := do
   let returnType ← mkFreshExprMVar (mkSort (mkLevelSucc u))
   return { m, returnType, expectedType := mkApp m returnType }
 
--- TODO: Understand and update extractBind
 private partial def extractBind (expectedType? : Option Expr) : TermElabM ExtractMonadResult := do
   let some expectedType := expectedType? | mkUnknownMonadResult
   let extractStep? (type : Expr) : MetaM (Option ExtractMonadResult) := do
@@ -126,6 +125,18 @@ private partial def extractBind (expectedType? : Option Expr) : TermElabM Extrac
   match (← extract? expectedType) with
   | some r => return r
   | none   => throwError "invalid 'do' notation, expected type is not a monad application{indentExpr expectedType}\nYou can use the `do` notation in pure code by writing `Id.run do` instead of `do`, where `Id` is the identity monad."
+
+-- TODO: Update generalizeBindUniverse to support monads applied to arguments
+private def generalizeBindUniverse (bindInfo: ExtractMonadResult): TermElabM ExtractMonadResult := do
+  match bindInfo.m with
+  | .const name levels => do
+    trace[Elab.do] s!"Found monad constant {name} with levels {levels}"
+    let gm ← mkConstWithLevelParams name
+    trace[Elab.do] s!"Generalizing into {gm}"
+    return { bindInfo with m := gm }
+  | _ =>
+    trace[Elab.do] s!"Failed to generalize levels for monad: {bindInfo.m}"
+    return bindInfo
 
 namespace HDo
 
@@ -1615,7 +1626,6 @@ private def mkMonadAlias (m : Expr) : TermElabM Syntax := do
       safety := DefinitionSafety.safe
   }
   ensureNoUnassignedMVars decl
-  dbg_trace m
   addAndCompile decl
   Term.applyAttributes name #[{ name := `inline }, { name := `reducible }]
   return mkIdent name
@@ -1624,6 +1634,7 @@ private def mkMonadAlias (m : Expr) : TermElabM Syntax := do
 @[termElab «hdo»] def elabHDo : TermElab := fun stx expectedType? => do
   tryPostponeIfNoneOrMVar expectedType?
   let bindInfo ← extractBind expectedType?
+  let bindInfo ← generalizeBindUniverse bindInfo
   let m ← mkMonadAlias bindInfo.m
   let returnType ← Term.exprToSyntax bindInfo.returnType
   let codeBlock ← ToCodeBlock.run stx m returnType
@@ -1637,12 +1648,8 @@ private def mkMonadAlias (m : Expr) : TermElabM Syntax := do
   | `(hdo (monad := $stx_monad:term) $stx_seq) =>
       let stx ← `(hdo $stx_seq)
 
-      -- We get an expression for the universe polymorphic monad as parameter
       let monad ← elabTerm stx_monad none
-      dbg_trace "Monad:"
-      dbg_trace monad
-      dbg_trace "Inferred monad type:"
-      dbg_trace (← inferType monad)
+      trace[Elab.do] s!"Manually-specified monad: {monad}: {← inferType monad}"
 
       tryPostponeIfNoneOrMVar expectedType?
       let bindInfo ← extractBind expectedType?
