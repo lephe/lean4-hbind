@@ -8,6 +8,15 @@ import Lean.Elab.BindersUtil
 import Lean.Elab.PatternVar
 import Lean.Elab.Quotation.Util
 import Lean.Parser.Do
+import Lean.Util.CollectLevelParams
+import HBind.HBind
+
+/-
+`hdo (monad := IDENT)`
+The identifier should be universe polymorphic.
+-/
+syntax (name := hdo) "hdo" doSeq: term
+syntax (name := hdo_2) "hdo " atomic("(" &"monad" " := " term ")") doSeq: term
 
 -- HACK: avoid code explosion until heuristics are improved
 set_option compiler.reuse false
@@ -97,6 +106,7 @@ private def mkUnknownMonadResult : MetaM ExtractMonadResult := do
   let returnType ← mkFreshExprMVar (mkSort (mkLevelSucc u))
   return { m, returnType, expectedType := mkApp m returnType }
 
+-- TODO: Understand and update extractBind
 private partial def extractBind (expectedType? : Option Expr) : TermElabM ExtractMonadResult := do
   let some expectedType := expectedType? | mkUnknownMonadResult
   let extractStep? (type : Expr) : MetaM (Option ExtractMonadResult) := do
@@ -124,7 +134,7 @@ private partial def extractBind (expectedType? : Option Expr) : TermElabM Extrac
   | some r => return r
   | none   => throwError "invalid 'do' notation, expected type is not a monad application{indentExpr expectedType}\nYou can use the `do` notation in pure code by writing `Id.run do` instead of `do`, where `Id` is the identity monad."
 
-namespace Do
+namespace HDo
 
 abbrev Var := Syntax  -- TODO: should be `Ident`
 
@@ -704,15 +714,6 @@ private def mkDoIfView (doIf : Syntax) : MacroM DoIfView := do
     elseBranch := doIf[5][1]
   }
 
-/-
-We use `MProd` instead of `Prod` to group values when expanding the
-`do` notation. `MProd` is a universe monomorphic product.
-The motivation is to generate simpler universe constraints in code
-that was not written by the user.
-Note that we are not restricting the macro power since the
-`Bind.bind` combinator already forces values computed by monadic
-actions to be in the same universe.
--/
 private def mkTuple (elems : Array Syntax) : MacroM Syntax := do
   if elems.size == 0 then
     mkUnit
@@ -720,7 +721,7 @@ private def mkTuple (elems : Array Syntax) : MacroM Syntax := do
     return elems[0]!
   else
     elems.extract 0 (elems.size - 1) |>.foldrM (init := elems.back) fun elem tuple =>
-      ``(MProd.mk $elem $tuple)
+      ``(Prod.mk $elem $tuple)
 
 /- Return `some action` if `doElem` is a `doExpr <action>`-/
 def isDoExpr? (doElem : Syntax) : Option Syntax :=
@@ -880,9 +881,9 @@ def returnToTerm (val : Syntax) : M Syntax := do
   let ctx ← read
   let u ← mkUVarTuple
   match ctx.kind with
-  | Kind.regular         => if ctx.uvars.isEmpty then ``(Pure.pure $val) else ``(Pure.pure (MProd.mk $val $u))
+  | Kind.regular         => if ctx.uvars.isEmpty then ``(Pure.pure $val) else ``(Pure.pure (Prod.mk $val $u))
   | Kind.forIn           => ``(Pure.pure (ForInStep.done $u))
-  | Kind.forInWithReturn => ``(Pure.pure (ForInStep.done (MProd.mk (some $val) $u)))
+  | Kind.forInWithReturn => ``(Pure.pure (ForInStep.done (Prod.mk (some $val) $u)))
   | Kind.nestedBC        => unreachable!
   | Kind.nestedPR        => ``(Pure.pure (DoResultPR.«return» $val $u))
   | Kind.nestedSBC       => ``(Pure.pure (DoResultSBC.«pureReturn» $val $u))
@@ -894,7 +895,7 @@ def continueToTerm : M Syntax := do
   match ctx.kind with
   | Kind.regular         => unreachable!
   | Kind.forIn           => ``(Pure.pure (ForInStep.yield $u))
-  | Kind.forInWithReturn => ``(Pure.pure (ForInStep.yield (MProd.mk none $u)))
+  | Kind.forInWithReturn => ``(Pure.pure (ForInStep.yield (Prod.mk none $u)))
   | Kind.nestedBC        => ``(Pure.pure (DoResultBC.«continue» $u))
   | Kind.nestedPR        => unreachable!
   | Kind.nestedSBC       => ``(Pure.pure (DoResultSBC.«continue» $u))
@@ -906,7 +907,7 @@ def breakToTerm : M Syntax := do
   match ctx.kind with
   | Kind.regular         => unreachable!
   | Kind.forIn           => ``(Pure.pure (ForInStep.done $u))
-  | Kind.forInWithReturn => ``(Pure.pure (ForInStep.done (MProd.mk none $u)))
+  | Kind.forInWithReturn => ``(Pure.pure (ForInStep.done (Prod.mk none $u)))
   | Kind.nestedBC        => ``(Pure.pure (DoResultBC.«break» $u))
   | Kind.nestedPR        => unreachable!
   | Kind.nestedSBC       => ``(Pure.pure (DoResultSBC.«break» $u))
@@ -916,13 +917,13 @@ def actionTerminalToTerm (action : Syntax) : M Syntax := withRef action <| withF
   let ctx ← read
   let u ← mkUVarTuple
   match ctx.kind with
-  | Kind.regular         => if ctx.uvars.isEmpty then pure action else ``(Bind.bind $action fun y => Pure.pure (MProd.mk y $u))
-  | Kind.forIn           => ``(Bind.bind $action fun (_ : PUnit) => Pure.pure (ForInStep.yield $u))
-  | Kind.forInWithReturn => ``(Bind.bind $action fun (_ : PUnit) => Pure.pure (ForInStep.yield (MProd.mk none $u)))
+  | Kind.regular         => if ctx.uvars.isEmpty then pure action else ``(HBind.hBind $action fun y => Pure.pure (Prod.mk y $u))
+  | Kind.forIn           => ``(HBind.hBind $action fun (_ : PUnit) => Pure.pure (ForInStep.yield $u))
+  | Kind.forInWithReturn => ``(HBind.hBind $action fun (_ : PUnit) => Pure.pure (ForInStep.yield (Prod.mk none $u)))
   | Kind.nestedBC        => unreachable!
-  | Kind.nestedPR        => ``(Bind.bind $action fun y => (Pure.pure (DoResultPR.«pure» y $u)))
-  | Kind.nestedSBC       => ``(Bind.bind $action fun y => (Pure.pure (DoResultSBC.«pureReturn» y $u)))
-  | Kind.nestedPRBC      => ``(Bind.bind $action fun y => (Pure.pure (DoResultPRBC.«pure» y $u)))
+  | Kind.nestedPR        => ``(HBind.hBind $action fun y => (Pure.pure (DoResultPR.«pure» y $u)))
+  | Kind.nestedSBC       => ``(HBind.hBind $action fun y => (Pure.pure (DoResultSBC.«pureReturn» y $u)))
+  | Kind.nestedPRBC      => ``(HBind.hBind $action fun y => (Pure.pure (DoResultPRBC.«pure» y $u)))
 
 def seqToTerm (action : Syntax) (k : Syntax) : M Syntax := withRef action <| withFreshMacroScope do
   if action.getKind == ``Lean.Parser.Term.doDbgTrace then
@@ -933,7 +934,7 @@ def seqToTerm (action : Syntax) (k : Syntax) : M Syntax := withRef action <| wit
     `(assert! $cond; $k)
   else
     let action ← withRef action ``(($action : $((←read).m) PUnit))
-    ``(Bind.bind $action (fun (_ : PUnit) => $k))
+    ``(HBind.hBind $action (fun (_ : PUnit) => $k))
 
 def declToTerm (decl : Syntax) (k : Syntax) : M Syntax := withRef decl <| withFreshMacroScope do
   let kind := decl.getKind
@@ -954,7 +955,7 @@ def declToTerm (decl : Syntax) (k : Syntax) : M Syntax := withRef decl <| withFr
       match isDoExpr? doElem with
       | some action =>
         let action ← withRef action `(($action : $((← read).m) $type))
-        ``(Bind.bind $action (fun ($id:ident : $type) => $k))
+        ``(HBind.hBind $action (fun ($id:ident : $type) => $k))
       | none        => Macro.throwErrorAt decl "unexpected kind of 'do' declaration"
     else
       Macro.throwErrorAt decl "unexpected kind of 'do' declaration"
@@ -1421,9 +1422,9 @@ mutual
         let forInBody ← liftMacroM <| destructTuple uvars (← `(r)) forInBody
         let optType ← `(Option $((← read).returnType))
         let forInTerm ← if let some h := h? then
-          `(for_in'% $(xs) (MProd.mk (none : $optType) $uvarsTuple) fun $x $h (r : MProd $optType _) => let r := r.2; $forInBody)
+          `(for_in'% $(xs) (Prod.mk (none : $optType) $uvarsTuple) fun $x $h (r : MProd $optType _) => let r := r.2; $forInBody)
         else
-          `(for_in% $(xs) (MProd.mk (none : $optType) $uvarsTuple) fun $x (r : MProd $optType _) => let r := r.2; $forInBody)
+          `(for_in% $(xs) (Prod.mk (none : $optType) $uvarsTuple) fun $x (r : MProd $optType _) => let r := r.2; $forInBody)
         let auxDo ← `(do let r ← $forInTerm:term;
                          $uvarsTuple:term := r.2;
                          match r.1 with
@@ -1604,17 +1605,60 @@ def run (doStx : Syntax) (m : Syntax) (returnType : Syntax) : TermElabM CodeBloc
 
 end ToCodeBlock
 
-@[builtinTermElab «do»] def elabDo : TermElab := fun stx expectedType? => do
+/- HBind: The elaborator for `do` aliases the monad through a metavariable to
+   embed its `Term` into `Syntax`. But metavariables can't be universe
+   polymorphic, so we instead hack and create a quantified external definition,
+   then return the name of that definition. -/
+private def mkMonadAlias (m : Expr) : TermElabM Syntax := do
+  let levelParams := collectLevelParams {} m |>.params
+  let mType ← inferType m
+  let name ← mkFreshUserName `_hdo
+  let decl := Declaration.defnDecl {
+      name := name, levelParams := levelParams.toList, type := mType,
+      value := m, hints := ReducibilityHints.opaque,
+      safety := DefinitionSafety.unsafe
+  }
+  ensureNoUnassignedMVars decl
+  dbg_trace m
+  addAndCompile decl
+  return mkIdent name
+
+-- HDO: This elaborates like the normal do command (but with Prod/HBind)
+@[termElab «hdo»] def elabHDo : TermElab := fun stx expectedType? => do
   tryPostponeIfNoneOrMVar expectedType?
   let bindInfo ← extractBind expectedType?
-  let m ← Term.exprToSyntax bindInfo.m
+  let m ← mkMonadAlias bindInfo.m
   let returnType ← Term.exprToSyntax bindInfo.returnType
   let codeBlock ← ToCodeBlock.run stx m returnType
   let stxNew ← liftMacroM <| ToTerm.run codeBlock.code m returnType
   trace[Elab.do] stxNew
   withMacroExpansion stx stxNew <| elabTermEnsuringType stxNew bindInfo.expectedType
 
-end Do
+-- HDO: Variation with additional information for testing
+@[termElab «hdo_2»] def elabHDo2 : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(hdo (monad := $stx_monad:term) $stx_seq) =>
+      let stx ← `(hdo $stx_seq)
+
+      -- We get an expression for the universe polymorphic monad as parameter
+      let monad ← elabTerm stx_monad none
+      dbg_trace "Monad:"
+      dbg_trace monad
+      dbg_trace "Inferred monad type:"
+      dbg_trace (← inferType monad)
+
+      tryPostponeIfNoneOrMVar expectedType?
+      let bindInfo ← extractBind expectedType?
+      let m ← mkMonadAlias monad
+      let returnType ← Term.exprToSyntax bindInfo.returnType
+      let codeBlock ← ToCodeBlock.run stx m returnType
+      let stxNew ← liftMacroM <| ToTerm.run codeBlock.code m returnType
+      trace[Elab.do] stxNew
+      withMacroExpansion stx stxNew <| elabTermEnsuringType stxNew bindInfo.expectedType
+
+  | _ => throwError "unrecognized syntax for hdo_2"
+
+end HDo
 
 builtin_initialize registerTraceClass `Elab.do
 

@@ -5,7 +5,7 @@ package hbind {
   -- add package configuration options here
 }
 
-lean_lib Hbind {
+lean_lib HBind {
   -- add library configuration options here
 }
 
