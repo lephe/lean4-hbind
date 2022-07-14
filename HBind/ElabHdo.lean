@@ -8,6 +8,7 @@ import Lean.Elab.BindersUtil
 import Lean.Elab.PatternVar
 import Lean.Elab.Quotation.Util
 import Lean.Parser.Do
+import Lean.Elab.Do
 import Lean.Util.CollectLevelParams
 import HBind.HBind
 
@@ -36,9 +37,6 @@ private def getDoSeqElems (doSeq : Syntax) : List Syntax :=
 
 private def getDoSeq (doStx : Syntax) : Syntax :=
   doStx[1]
-
-@[builtinTermElab liftMethod] def elabLiftMethod : TermElab := fun stx _ =>
-  throwErrorAt stx "invalid use of `(<- ...)`, must be nested inside a 'do' expression"
 
 /-- Return true if we should not lift `(<- ...)` actions nested in the syntax nodes with the given kind. -/
 private def liftMethodDelimiter (k : SyntaxNodeKind) : Bool :=
@@ -93,11 +91,6 @@ private partial def hasLiftMethod : Syntax → Bool
     else if k == ``Lean.Parser.Term.liftMethod then true
     else args.any hasLiftMethod
   | _ => false
-
-structure ExtractMonadResult where
-  m            : Expr
-  returnType   : Expr
-  expectedType : Expr
 
 private def mkUnknownMonadResult : MetaM ExtractMonadResult := do
   let u ← mkFreshLevelMVar
@@ -1663,23 +1656,5 @@ private def mkMonadAlias (m : Expr) : TermElabM Syntax := do
   | _ => throwError "unrecognized syntax for hdo_2"
 
 end HDo
-
-builtin_initialize registerTraceClass `Elab.do
-
-private def toDoElem (newKind : SyntaxNodeKind) : Macro := fun stx => do
-  let stx := stx.setKind newKind
-  withRef stx `(do $stx:doElem)
-
-@[builtinMacro Lean.Parser.Term.termFor]
-def expandTermFor : Macro := toDoElem ``Lean.Parser.Term.doFor
-
-@[builtinMacro Lean.Parser.Term.termTry]
-def expandTermTry : Macro := toDoElem ``Lean.Parser.Term.doTry
-
-@[builtinMacro Lean.Parser.Term.termUnless]
-def expandTermUnless : Macro := toDoElem ``Lean.Parser.Term.doUnless
-
-@[builtinMacro Lean.Parser.Term.termReturn]
-def expandTermReturn : Macro := toDoElem ``Lean.Parser.Term.doReturn
 
 end Lean.Elab.Term
