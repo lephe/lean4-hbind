@@ -126,17 +126,30 @@ private partial def extractBind (expectedType? : Option Expr) : TermElabM Extrac
   | some r => return r
   | none   => throwError "invalid 'do' notation, expected type is not a monad application{indentExpr expectedType}\nYou can use the `do` notation in pure code by writing `Id.run do` instead of `do`, where `Id` is the identity monad."
 
--- TODO: Update generalizeBindUniverse to support monads applied to arguments
 private def generalizeBindUniverse (bindInfo: ExtractMonadResult): TermElabM ExtractMonadResult := do
-  match bindInfo.m with
-  | .const name levels => do
-    trace[Elab.do] s!"Found monad constant {name} with levels {levels}"
-    let gm ← mkConstWithLevelParams name
-    trace[Elab.do] s!"Generalizing into {gm}"
-    return { bindInfo with m := gm }
-  | _ =>
-    trace[Elab.do] s!"Failed to generalize levels for monad: {bindInfo.m}"
-    return bindInfo
+  let rec genAppliedConst: Expr → TermElabM Expr
+    | .const name levels => do
+      trace[Elab.do] s!"Found monad constant {name} with levels {levels}"
+      let gm ← mkConstWithLevelParams name
+      trace[Elab.do] s!"Generalizing {name} into {gm}"
+      return gm
+    | .app func arg => do
+      -- TODO: Simply erasing the universe levels of the argument is fragile
+      let arg: TermElabM Expr :=
+        match arg with
+        | .const name _ => do
+          let e ← mkConstWithFreshMVarLevels name
+          trace[Elab.do] s!"Generalizing {arg} into {e}"
+          return e
+        | e => do
+          return e
+      mkAppM' (← genAppliedConst func) #[← arg]
+    | e => do
+      trace[Elab.do] s!"Failed to generalize levels for monad: {bindInfo.m}"
+      return e
+  let m ← genAppliedConst bindInfo.m
+  trace[Elab.do] s!"Final monad: {m}"
+  return { bindInfo with m := m }
 
 namespace HDo
 

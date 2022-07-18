@@ -64,3 +64,56 @@ def test_IO: IO Unit := hdo
   IO.println "hBind"
   return ()
 #print test_IO
+
+--== Tests with a custom monad ==============================================--
+
+-- We have to decouple the universes of the parameter `E: Type u → Type v` from
+-- those of `R: Type w` since the latter is going to vary, but not the former
+inductive ITree (E: Type u → Type v) (R: Type w): Type _ :=
+  | Ret (r: R)
+  | Vis {T: Type _} (e: E T) (k: T → ITree E R)
+
+namespace ITree
+def ITree.pure (r: R): ITree E R :=
+  Ret r
+def ITree.bind (t: ITree E T) (k: T → ITree E R) :=
+  match t with
+  | Ret r => k r
+  | Vis e kt => Vis e (fun x => bind (kt x) k)
+
+instance: Monad (ITree E) where
+  pure := ITree.pure
+  bind := ITree.bind
+
+instance: HBind (ITree E) (ITree E) where
+  hBind {R₁: Type _} {R₂: Type _} (t: ITree E R₁) (k: R₁ → ITree E R₂):
+    ITree E R₂ := ITree.bind t k
+
+inductive PVoid: Type u → Type v :=
+
+inductive E00 {α: Type _} {β: Type}: Type → Type :=
+  | getNat: (n: Nat) → E00 Nat
+
+inductive E01: Type → Type 1 :=
+  | call: {α β: Type} → (f: α → β) → (x: α) → E01 β
+
+inductive E11: Type 1 → Type 1 :=
+  | mkConst: {R: Type} → (x: R) → E11 (ITree PVoid.{0,0} R)
+  | trigger: {E: Type → Type} → {T: Type} → (e: E T) → E11 (ITree E T)
+
+inductive Euv: Type u → Type _ :=
+  | run: {E: Type u → Type v} → {R: Type u} → (t: ITree E R) → Euv R
+
+example: ITree PVoid Nat :=
+  HBind.hBind (m := ITree PVoid) getD0 fun _ =>
+  HBind.hBind (m := ITree PVoid) getD1 fun _ =>
+  pure 0
+
+example: ITree PVoid Nat := hdo
+  let _ ← getD0
+  let _ ← getDx.{4}
+  let _ ← getD1
+  pure 0
+
+example: ITree PVoid (ITree PVoid Nat) := hdo
+  pure (.Ret 0)
